@@ -431,7 +431,7 @@ class Dungeon:
 if not os.path.exists(os.getcwd()+'\\maps'):
     print('Creating maps folder')
     os.makedirs(os.getcwd()+'\\maps')
-from nicegui import app,ui
+from nicegui import app,ui,native
 
 
 class Data:
@@ -509,4 +509,4 @@ def page():
         ui.button('Generate', on_click=dungeon_wrapper)
         ui.button('Save', on_click=render_wrapper)
         ui.button('Exit', on_click=app.shutdown)
-ui.run(title='Dun_Gen UI',reload=False)
+ui.run(title='Dun_Gen UI',reload=False,host='localhost',port=native.find_open_port())
