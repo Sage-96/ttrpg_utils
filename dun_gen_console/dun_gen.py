@@ -6,7 +6,6 @@ from typing import Any, Tuple
 from dataclasses import dataclass, field
 from PIL import Image
 from datetime import datetime
-import os
 
 class Dungeon:
     _maskmap={0:1,1:2,2:3,4:4,8:5,16:6,32:7,64:8,128:9,3:2,5:10,9:11,17:12,33:13,
@@ -98,7 +97,7 @@ class Dungeon:
         self.cells={}
         self.rooms={}
 
-        self.map_=np.full((self.map_height,self.map_width),'W',dtype="U64")
+        self.map_=np.full((self.map_height,self.map_width),'█',dtype="U64")
         if self.debug:
             print("Debugging on")
             self.sequence=[]
@@ -122,6 +121,7 @@ class Dungeon:
             self.sequence[0].save(f'maps/dun_gen_debug_{datetime.now().strftime("%Y%m%d_%H%M%S")}.gif',
                save_all = True, append_images = self.sequence[1:],
                optimize = False, duration = 200,loop=1)
+        
         #self.show()
         
         
@@ -472,7 +472,7 @@ class Dungeon:
                 for col in range(ox,ox+dx):
                     self.map_colored[row,col]=color+self.map_[row,col]+suffix
         self.show(param=1)
-            
+        
         
         
         
@@ -482,12 +482,13 @@ class Dungeon:
         for line in to_show:
             print(''.join(list(map(str,line))))
         print('\n')
+        return self
         
     def render(self):
-        border=Image.open('assets/border.png')
-        wall=Image.open('assets/wall.png')
-        floor=Image.open('assets/floor.png')
-        tiles={' ':floor,'W':wall,'x':border}
+        border=Image.open('maps/resources/border.png')
+        wall=Image.open('maps/resources/wall.png')
+        floor=Image.open('maps/resources/floor.png')
+        tiles={' ':floor,'█':wall,'x':border}
         tile_size=border.width
         
         final=Image.new('RGB',(self.map_width*tile_size,self.map_height*tile_size))
@@ -495,9 +496,11 @@ class Dungeon:
             pos=(x*tile_size,y*tile_size)
             final.paste(tiles[ch],pos)
         final.save(f'maps/dun_gen_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+        return self
+    
     def render_thumbnail(self,show=False):
         
-        pixels={' ':(75,105,47),'W':(105,106,106),'x':(52,52,52)}
+        pixels={' ':(75,105,47),'█':(105,106,106),'x':(52,52,52)}
         
         thumbnail=Image.new('RGB',(self.map_width,self.map_height))
         for (y,x),ch in np.ndenumerate(self.map_):
@@ -508,14 +511,14 @@ class Dungeon:
         else: return self,thumbnail
         
     def fancy_render(self):
-        border=Image.open('assets/border.png').convert('RGBA')
-        wall=Image.open('assets/wall.png').convert('RGBA')
-        floor=Image.open('assets/floor.png').convert('RGBA')
-        wall_floor=Image.open('assets/wall_floor.png').convert('RGBA')
-        tiles={' ':floor,'W':wall,'x':border}
+        border=Image.open('maps/resources/border.png').convert('RGBA')
+        wall=Image.open('maps/resources/wall.png').convert('RGBA')
+        floor=Image.open('maps/resources/floor.png').convert('RGBA')
+        wall_floor=Image.open('maps/resources/wall_floor.png').convert('RGBA')
+        tiles={' ':floor,'█':wall,'x':border}
         tile_size=border.width
         
-        mask_file=Image.open('assets/tileset_mask.png').convert('L')
+        mask_file=Image.open('maps/resources/tileset_mask.png').convert('L')
         masks={}        
         for x in range(0,mask_file.width//tile_size):
             l=x*tile_size
@@ -527,7 +530,7 @@ class Dungeon:
         final=Image.new('RGBA',(self.map_width*tile_size,self.map_height*tile_size))
         for (y,x),ch in np.ndenumerate(self.map_):
             pos=(x*tile_size,y*tile_size)
-            if ch !='W':
+            if ch !='█':
                 final.paste(tiles[ch],pos)
             else:
                 score=0
@@ -543,88 +546,13 @@ class Dungeon:
                 temp=Image.composite(wall,wall_floor,mask)
                 final.paste(temp,pos)
                 
-        final.save(f'maps/dun_gen_fancy_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')       
+        final.save(f'maps/dun_gen_fancy_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+        return self
+        
     
-if not os.path.exists(os.getcwd()+'\\maps'):
-    print('Creating maps folder')
-    os.makedirs(os.getcwd()+'\\maps')
-from nicegui import app,ui,native
-
-
-class Data:
-    def __init__(self):
-        self.rooms_width=5
-        self.rooms_height=4
-        self.cell_width=24
-        self.cell_height=13
-        self.mode=0
-        self.density=0.6
-        self.merge_chance=0.05
-        self.search_range=1
-        self.extra_walk_count=0
-        self.extra_walk_length=100
-        self.bonus_connections=0
-        
-
-dungeon_data=Data()
-
-def make_dungeon_and_thumbnail():
-    dungeon=Dungeon(cell_count=(dungeon_data.rooms_width,dungeon_data.rooms_height),
-                    map_size=(dungeon_data.rooms_width*dungeon_data.cell_width,dungeon_data.rooms_height*dungeon_data.cell_height),
-                    mode=dungeon_data.mode,density=dungeon_data.density, merge_chance=dungeon_data.merge_chance,
-                    search_range=dungeon_data.search_range,extra_walk_count=dungeon_data.extra_walk_count,
-                    extra_walk_length=dungeon_data.extra_walk_length,bonus_connections=dungeon_data.bonus_connections)
-    dungeon,thumb=dungeon.render_thumbnail()
-    return dungeon,thumb
-
-
-d,th=make_dungeon_and_thumbnail()
-size={'s':f'Final Map Size: {d.map_width*16}x{d.map_height*16}'}
-@ui.page('/')
-def page():     
-    with ui.row():
-        with ui.column():
-            v = ui.checkbox('Advanced Options', value=False)
-            with ui.column().bind_visibility_from(v, 'value'):
-                
-                ui.number("Map Columns",value=5,min=1,max=16).bind_value(dungeon_data, 'rooms_width').props("size=10")
-                ui.number("Map Rows",value=4,min=1,max=16).bind_value(dungeon_data, 'rooms_height').props("size=10")
-                ui.number("Cell Width",value=24,min=12,max=40).bind_value(dungeon_data, 'cell_width').props("size=10")
-                ui.number("Cell Height",value=13,min=10,max=40).bind_value(dungeon_data, 'cell_height').props("size=10")
-
-                
-
-                ui.number("Bonus Connections",value=0,min=0).bind_value(dungeon_data, 'bonus_connections').props("size=10")
-                ui.number("Extra Paths",value=0,min=0).bind_value(dungeon_data, 'extra_walk_count').props("size=10")
-                ui.number("Extra Path length",value=100,min=0).bind_value(dungeon_data, 'extra_walk_length').props("size=10")
-                dc = ui.checkbox('Danger Zone', value=False)
-                with ui.column().bind_visibility_from(dc, 'value'):
-                    ui.label('Room density (Use caution with low values)')
-                    ui.label('')
-                    density_slider=ui.slider(min=0, max=1,step=.001,value=0.6).props('label-always').bind_value(dungeon_data, 'density')
-                    density_slider.bind_value_to(density_slider.props, 'label-value', lambda x: f'{x*100:.1f}%')
-                    ui.label('Merge Chance (Use caution with high values)')
-                    ui.label('')
-                    merge_slider=ui.slider(min=0, max=1,step=.001,value=0.05).props('label-always').bind_value(dungeon_data, 'merge_chance')
-                    merge_slider.bind_value_to(merge_slider.props, 'label-value', lambda x: f'{x*100:.1f}%')
-        img=ui.image(th).props(f"width={th.width*6}px height={th.height*6}px").style('image-rendering: pixelated;')
-
-
-
-
-    def dungeon_wrapper():
-        global d; global th
-        d,th = make_dungeon_and_thumbnail()
-        img.set_source(th)
-        img.props(f"width={th.width*6}px height={th.height*6}px").style('image-rendering: pixelated;')
-        size['s']=f'Final Map Size: {d.map_width*16}x{d.map_height*16}'
-        
-    def render_wrapper():
-        d.fancy_render()
-    final_render_label=ui.label().bind_text_from(size,'s')
-    with ui.row():
-        ui.button('Generate', on_click=dungeon_wrapper)
-        ui.button('Save', on_click=render_wrapper)
-        ui.button('Exit', on_click=app.shutdown)
-ui.run(title='Dun_Gen UI',reload=False,host='localhost',port=native.find_open_port())
-
+'''        
+if __name__=='__main__':
+    
+    d=Dungeon((5,4),mode=0,cull=[(0,0),(1,1),(1,2),(4,1)],extra_walk_count=2,debug=True)
+    d.show_cell_boundaries()
+'''
