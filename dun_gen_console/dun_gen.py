@@ -6,6 +6,9 @@ from typing import Any, Tuple
 from dataclasses import dataclass, field
 from PIL import Image
 from datetime import datetime
+import base64
+from io import BytesIO
+import json
 
 class Dungeon:
     _maskmap={0:1,1:2,2:3,4:4,8:5,16:6,32:7,64:8,128:9,3:2,5:10,9:11,17:12,33:13,
@@ -60,7 +63,8 @@ class Dungeon:
             
     
     def __init__(self,cell_count:tuple[int,int]=(4,3),map_size:tuple[int,int]=(96,39),mode:int=0,density:float=0.6, merge_chance:float=0.05,search_range:int=1,debug=False,**kwargs):
-        
+        self.last_render=None
+        self.internals={}
         self.map_width, self.map_height = map_size
         self.map_width=int(self.map_width)
         self.map_height=int(self.map_height)
@@ -485,17 +489,19 @@ class Dungeon:
         return self
         
     def render(self):
-        border=Image.open('maps/resources/border.png')
-        wall=Image.open('maps/resources/wall.png')
-        floor=Image.open('maps/resources/floor.png')
+        border=Image.open('assets/border.png')
+        wall=Image.open('assets/wall.png')
+        floor=Image.open('assets/floor.png')
         tiles={' ':floor,'█':wall,'x':border}
         tile_size=border.width
+        self.tile_size=border.width
         
         final=Image.new('RGB',(self.map_width*tile_size,self.map_height*tile_size))
         for (y,x),ch in np.ndenumerate(self.map_):
             pos=(x*tile_size,y*tile_size)
             final.paste(tiles[ch],pos)
         final.save(f'maps/dun_gen_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+        self.last_render=final.copy()
         return self
     
     def render_thumbnail(self,show=False):
@@ -511,14 +517,15 @@ class Dungeon:
         else: return self,thumbnail
         
     def fancy_render(self):
-        border=Image.open('maps/resources/border.png').convert('RGBA')
-        wall=Image.open('maps/resources/wall.png').convert('RGBA')
-        floor=Image.open('maps/resources/floor.png').convert('RGBA')
-        wall_floor=Image.open('maps/resources/wall_floor.png').convert('RGBA')
+        border=Image.open('assets/border.png').convert('RGBA')
+        wall=Image.open('assets/wall.png').convert('RGBA')
+        floor=Image.open('assets/floor.png').convert('RGBA')
+        wall_floor=Image.open('assets/wall_floor.png').convert('RGBA')
         tiles={' ':floor,'█':wall,'x':border}
         tile_size=border.width
+        self.tile_size=border.width
         
-        mask_file=Image.open('maps/resources/tileset_mask.png').convert('L')
+        mask_file=Image.open('assets/tileset_mask.png').convert('L')
         masks={}        
         for x in range(0,mask_file.width//tile_size):
             l=x*tile_size
@@ -542,17 +549,186 @@ class Dungeon:
                 if self.map_[y+1,x-1]==' ':score+=32
                 if self.map_[y,x-1]==' ':score+=64
                 if self.map_[y-1,x-1]==' ':score+=128
+                if score>0:
+                    self.internals[(x,y)]=score
+                    
                 mask=masks[self._maskmap[score]]
                 temp=Image.composite(wall,wall_floor,mask)
                 final.paste(temp,pos)
                 
         final.save(f'maps/dun_gen_fancy_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
+        self.last_render=final.copy()
         return self
+    
+    def make_uvtt(self):
+        if not self.last_render:
+            self.fancy_render()
+        b64_file=BytesIO()
+        self.last_render.save(b64_file,format='PNG')
+        img_bytes=b64_file.getvalue()
+        img_b64=base64.b64encode(img_bytes).decode('utf-8')
+            
+        uvtt_file={'format':0.3,
+                   'resolution':{
+                       'map_origin':{'x':0,'y':0},
+                       'map_size':{'x':self.map_width,'y':self.map_height},
+                       'pixels_per_grid': self.tile_size
+                       },
+                   'line_of_sight':[],
+                   'objects_line_of_sight':[],
+                   'portals':[],
+                   'environment':{
+                       'baked_lighting':True,
+                       'ambient_light':'ffffffff'
+                       },
+                   'lights':[],
+                   'image':img_b64
+                   }
+        walls=[]
+        for (y,x),ch in np.ndenumerate(self.map_[:-1,:-1]):
+            if ch in ['x','█']:
+
+                if self.map_[y+1,x]==' ':
+                    walls.append((x,y+1,x+1,y+1))
+                if self.map_[y,x+1]==' ':
+                    walls.append((x+1,y,x+1,y+1))
+            elif ch ==' ':
+                if self.map_[y+1,x] in ['x','█']:
+                    walls.append((x,y+1,x+1,y+1))
+                if self.map_[y,x+1] in ['x','█']:
+                    walls.append((x+1,y,x+1,y+1))
+                    
+        for row in range(1,self.map_height+1):
+            col=1
+            while col<self.map_width+1:
+                if (col,row,col+1,row) in walls:
+                    sequence=[{'x':col,'y':row}]
+                    while (col,row,col+1,row) in walls:
+                        walls.remove((col,row,col+1,row))
+                        col+=1
+                    sequence.append({'x':col,'y':row})
+                    uvtt_file['line_of_sight'].append(sequence.copy())
+                else:
+                    col+=1
+        for col in range(1,self.map_width+1):
+            row=1
+            while row<self.map_height+1:
+                if (col,row,col,row+1) in walls:
+                    sequence=[{'x':col,'y':row}]
+                    while (col,row,col,row+1) in walls:
+                        walls.remove((col,row,col,row+1))
+                        row+=1
+                    sequence.append({'x':col,'y':row})
+                    uvtt_file['line_of_sight'].append(sequence.copy())
+                else:
+                    row+=1
+        _fancywalls={
+            2:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            3:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            4:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            5:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            6:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            7:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            8:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            9:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            10:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            11:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            12:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            13:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            14:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            15:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}],[{'x':x+.5,'y':y+.5},{'x':x+.1,'y':y+.5}]],
+            16:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            17:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            18:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            19:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            20:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            21:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            22:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            23:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            24:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            25:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            26:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            27:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            28:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            29:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            30:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            31:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            32:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            33:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            34:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            35:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            36:lambda:[[{'x':x+1,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            37:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            38:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            39:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            40:lambda:[[{'x':x+1,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            41:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            42:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            43:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            44:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            45:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            46:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            47:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            48:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            49:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            50:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            51:lambda:[[{'x':x,'y':y+.5},{'x':x+1,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            52:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}],[{'x':x+.5,'y':y},{'x':x+.5,'y':y+1}]],
+            53:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5}]],
+            54:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            55:lambda:[[{'x':x+1,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            56:lambda:[[{'x':x+1,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            57:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5},{'x':x+.1,'y':y+.5}]],
+            58:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y+1}]],
+            59:lambda:[[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]]],
+            60:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            61:lambda:[[{'x':x+.5,'y':y+1},{'x':x+.5,'y':y+.5}]],
+            62:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            63:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5}]],
+            64:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            65:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5}]],
+            66:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            67:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            68:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            69:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            70:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            71:lambda:[[{'x':x,'y':y+.5},{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            72:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            73:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            74:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            75:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            76:lambda:[[{'x':x+.5,'y':y},{'x':x+.5,'y':y+.5},{'x':x+1,'y':y+.5}]],
+            77:lambda:[[{'x':x+.5,'y':y+.5},{'x':x+.5,'y':y}]],
+            78:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            79:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            80:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            81:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            82:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]],
+            83:lambda:[[{'x':x+.25,'y':y+.25},{'x':x+.75,'y':y+.25},{'x':x+.75,'y':y+.75},{'x':x+.25,'y':y+.75},{'x':x+.25,'y':y+.25}]]
+        }
+        for (x,y),v in self.internals.items():
+            for block in _fancywalls[self._maskmap[v]]():
+                uvtt_file['line_of_sight'].append(block.copy())
+        
+            
+            
+            #if walls: uvtt_file['line_of_sight'].append(walls.copy())
+        with open(f'maps/dun_gen_uvtt_{datetime.now().strftime("%Y%m%d_%H%M%S")}.uvtt','w') as file:
+            json.dump(uvtt_file,file,indent=4)
+        return
         
     
-'''        
+      
 if __name__=='__main__':
     
+    if not os.path.exists(os.getcwd()+'\\maps'):
+    print('Creating maps folder')
+    os.makedirs(os.getcwd()+'\\maps')
+    
     d=Dungeon((5,4),mode=0,cull=[(0,0),(1,1),(1,2),(4,1)],extra_walk_count=2,debug=True)
-    d.show_cell_boundaries()
-'''
+    '''d.show_cell_boundaries()'''
+    '''d=Dungeon((2,2))'''
+    d.show()
+    d.fancy_render()
+    d.make_uvtt()
+

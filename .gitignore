@@ -174,3 +174,5 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+/dun_gen_console/maps/
+/dun_gen_gui/maps/
