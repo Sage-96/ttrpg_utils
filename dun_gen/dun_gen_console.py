@@ -709,10 +709,6 @@ class Dungeon:
         for (x,y),v in self.internals.items():
             for block in _fancywalls[self._maskmap[v]]():
                 uvtt_file['line_of_sight'].append(block.copy())
-        
-            
-            
-            #if walls: uvtt_file['line_of_sight'].append(walls.copy())
         with open(f'maps/dun_gen_uvtt_{datetime.now().strftime("%Y%m%d_%H%M%S")}.uvtt','w') as file:
             json.dump(uvtt_file,file,indent=4)
         return
