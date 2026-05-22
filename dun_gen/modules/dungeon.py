@@ -1,3 +1,14 @@
+import random
+from math import inf
+import numpy as np
+from itertools import product
+from typing import Any, Tuple
+from dataclasses import dataclass, field
+from PIL import Image
+from datetime import datetime
+import base64
+from io import BytesIO
+import json
 class Dungeon:
     _maskmap={0:1,1:2,2:3,4:4,8:5,16:6,32:7,64:8,128:9,3:2,5:10,9:11,17:12,33:13,
               65:14,129:2,6:4,10:15,18:16,34:17,66:18,130:19,12:4,20:20,36:21,68:22,
@@ -50,7 +61,11 @@ class Dungeon:
         
             
     
-    def __init__(self,cell_count:tuple[int,int]=(4,3),map_size:tuple[int,int]=(96,39),mode:int=0,density:float=0.6, merge_chance:float=0.05,search_range:int=1,debug=False,**kwargs):
+    def __init__(self,cell_count:tuple[int,int]=(4,3),map_size:tuple[int,int]=(96,39),mode:int=0,density:float=0.6, merge_chance:float=0.05,search_range:int=1,debug=False,wall_char='W',border_char='x',floor_char=' ',**kwargs):
+        
+        self.wall_char=wall_char
+        self.border_char=border_char
+        self.floor_char=floor_char
         self.last_render=None
         self.internals={}
         self.map_width, self.map_height = map_size
@@ -89,7 +104,7 @@ class Dungeon:
         self.cells={}
         self.rooms={}
 
-        self.map_=np.full((self.map_height,self.map_width),'█',dtype="U64")
+        self.map_=np.full((self.map_height,self.map_width),self.wall_char,dtype="U64")
         if self.debug:
             print("Debugging on")
             self.sequence=[]
@@ -113,7 +128,6 @@ class Dungeon:
             self.sequence[0].save(f'maps/dun_gen_debug_{datetime.now().strftime("%Y%m%d_%H%M%S")}.gif',
                save_all = True, append_images = self.sequence[1:],
                optimize = False, duration = 200,loop=1)
-        
         #self.show()
         
         
@@ -244,7 +258,7 @@ class Dungeon:
             oy+=y*self.room_height
             for row in range(oy,oy+dy):
                 for col in range(ox,ox+dx):
-                    self.map_[row,col]=' '
+                    self.map_[row,col]=self.floor_char
             
                     if self.debug:
                         self.debug_map[row,col]=self._cm['R' if cell.cell_type=='Room' else 'C']
@@ -290,7 +304,7 @@ class Dungeon:
                     
                     while track_x<mp:
                         track_x+=1
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -298,7 +312,7 @@ class Dungeon:
                             self.sequence.append(t.copy())
                     while track_y!=r_ep:
                         track_y+=d
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -306,7 +320,7 @@ class Dungeon:
                             self.sequence.append(t.copy())
                     while track_x<obx-1:
                         track_x+=1
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -332,7 +346,7 @@ class Dungeon:
                     
                     while track_y<mp:
                         track_y+=1
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -340,7 +354,7 @@ class Dungeon:
                             self.sequence.append(t.copy())
                     while track_x!=b_ep:
                         track_x+=d
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -348,7 +362,7 @@ class Dungeon:
                             self.sequence.append(t.copy())
                     while track_y<oby-1:
                         track_y+=1
-                        self.map_[track_y,track_x]=' '
+                        self.map_[track_y,track_x]=self.floor_char
                         if self.debug:
                             self.debug_map[track_y,track_x]=self._cm['F']
                             t=Image.fromarray(self.debug_map)
@@ -376,7 +390,7 @@ class Dungeon:
                     #print(f'{b_end=}')
                     for row in range(t_end,b_end):
                         for col in range(l_end,r_end):
-                            self.map_[row,col]=' '
+                            self.map_[row,col]=self.floor_char
                             if self.debug:
                                 self.debug_map[row,col]=self._cm['R']
 
@@ -392,7 +406,7 @@ class Dungeon:
                     #print(f'{b_end:}')
                     for row in range(t_end,b_end):
                         for col in range(l_end,r_end):
-                            self.map_[row,col]=' '
+                            self.map_[row,col]=self.floor_char
                             if self.debug:
                                 self.debug_map[row,col]=self._cm['R']
                         
@@ -405,16 +419,16 @@ class Dungeon:
                 
             
         for row in range(0,self.map_height):
-            self.map_[row,0]='x'
-            self.map_[row,self.map_width-1]='x'
+            self.map_[row,0]=self.border_char
+            self.map_[row,self.map_width-1]=self.border_char
         for col in range(0,self.map_width):
-            self.map_[0,col]='x'
-            self.map_[self.map_height-1,col]='x'
+            self.map_[0,col]=self.border_char
+            self.map_[self.map_height-1,col]=self.border_char
         
     def random_path_walk(self):
         directions={0:(-1,0),1:(0,1),2:(1,0),3:(0,-1)}
         x,y=0,0
-        while self.map_[y,x]!=' ':
+        while self.map_[y,x]!=self.floor_char:
             x=random.randint(1,self.map_width-2)
             y=random.randint(1,self.map_height-2)
         path_length=0
@@ -432,7 +446,7 @@ class Dungeon:
                     return
                 if y>=self.map_height-1 or y<=0:
                     return
-                self.map_[y,x]=' '
+                self.map_[y,x]=self.floor_char
                 if self.debug:
                     self.debug_map[prev_y,prev_x]=self._cm['N']
                     self.debug_map[y,x]=self._cm['S']
@@ -464,7 +478,7 @@ class Dungeon:
                 for col in range(ox,ox+dx):
                     self.map_colored[row,col]=color+self.map_[row,col]+suffix
         self.show(param=1)
-        
+            
         
         
         
@@ -474,13 +488,12 @@ class Dungeon:
         for line in to_show:
             print(''.join(list(map(str,line))))
         print('\n')
-        return self
         
     def render(self):
         border=Image.open('assets/border.png')
         wall=Image.open('assets/wall.png')
         floor=Image.open('assets/floor.png')
-        tiles={' ':floor,'█':wall,'x':border}
+        tiles={self.floor_char:floor,self.wall_char:wall,self.border_char:border}
         tile_size=border.width
         self.tile_size=border.width
         
@@ -490,11 +503,9 @@ class Dungeon:
             final.paste(tiles[ch],pos)
         final.save(f'maps/dun_gen_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
         self.last_render=final.copy()
-        return self
-    
     def render_thumbnail(self,show=False):
         
-        pixels={' ':(75,105,47),'█':(105,106,106),'x':(52,52,52)}
+        pixels={self.floor_char:(75,105,47),self.wall_char:(105,106,106),self.border_char:(52,52,52)}
         
         thumbnail=Image.new('RGB',(self.map_width,self.map_height))
         for (y,x),ch in np.ndenumerate(self.map_):
@@ -509,7 +520,7 @@ class Dungeon:
         wall=Image.open('assets/wall.png').convert('RGBA')
         floor=Image.open('assets/floor.png').convert('RGBA')
         wall_floor=Image.open('assets/wall_floor.png').convert('RGBA')
-        tiles={' ':floor,'█':wall,'x':border}
+        tiles={self.floor_char:floor,self.wall_char:wall,self.border_char:border}
         tile_size=border.width
         self.tile_size=border.width
         
@@ -525,28 +536,26 @@ class Dungeon:
         final=Image.new('RGBA',(self.map_width*tile_size,self.map_height*tile_size))
         for (y,x),ch in np.ndenumerate(self.map_):
             pos=(x*tile_size,y*tile_size)
-            if ch !='█':
+            if ch !=self.wall_char:
                 final.paste(tiles[ch],pos)
             else:
                 score=0
-                if self.map_[y-1,x]==' ':score+=1
-                if self.map_[y-1,x+1]==' ':score+=2
-                if self.map_[y,x+1]==' ':score+=4
-                if self.map_[y+1,x+1]==' ':score+=8
-                if self.map_[y+1,x]==' ':score+=16
-                if self.map_[y+1,x-1]==' ':score+=32
-                if self.map_[y,x-1]==' ':score+=64
-                if self.map_[y-1,x-1]==' ':score+=128
-                if score>0:
+                if self.map_[y-1,x]==self.floor_char:score+=1
+                if self.map_[y-1,x+1]==self.floor_char:score+=2
+                if self.map_[y,x+1]==self.floor_char:score+=4
+                if self.map_[y+1,x+1]==self.floor_char:score+=8
+                if self.map_[y+1,x]==self.floor_char:score+=16
+                if self.map_[y+1,x-1]==self.floor_char:score+=32
+                if self.map_[y,x-1]==self.floor_char:score+=64
+                if self.map_[y-1,x-1]==self.floor_char:score+=128
+                if score!=0:
                     self.internals[(x,y)]=score
-                    
                 mask=masks[self._maskmap[score]]
                 temp=Image.composite(wall,wall_floor,mask)
                 final.paste(temp,pos)
                 
         final.save(f'maps/dun_gen_fancy_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png')
         self.last_render=final.copy()
-        return self
     
     def make_uvtt(self):
         if not self.last_render:
@@ -572,18 +581,20 @@ class Dungeon:
                    'lights':[],
                    'image':img_b64
                    }
+        if self.tile_size<20:
+            print("CAUTION: FOUNDRY DOES NOT ALLOW TILE SIZES BELOW 20")
         walls=[]
         for (y,x),ch in np.ndenumerate(self.map_[:-1,:-1]):
-            if ch in ['x','█']:
+            if ch in [self.border_char,self.wall_char]:
 
-                if self.map_[y+1,x]==' ':
+                if self.map_[y+1,x]==self.floor_char:
                     walls.append((x,y+1,x+1,y+1))
-                if self.map_[y,x+1]==' ':
+                if self.map_[y,x+1]==self.floor_char:
                     walls.append((x+1,y,x+1,y+1))
-            elif ch ==' ':
-                if self.map_[y+1,x] in ['x','█']:
+            elif ch ==self.floor_char:
+                if self.map_[y+1,x] in [self.border_char,self.wall_char]:
                     walls.append((x,y+1,x+1,y+1))
-                if self.map_[y,x+1] in ['x','█']:
+                if self.map_[y,x+1] in [self.border_char,self.wall_char]:
                     walls.append((x+1,y,x+1,y+1))
                     
         for row in range(1,self.map_height+1):
@@ -697,6 +708,7 @@ class Dungeon:
         for (x,y),v in self.internals.items():
             for block in _fancywalls[self._maskmap[v]]():
                 uvtt_file['line_of_sight'].append(block.copy())
+
         with open(f'maps/dun_gen_uvtt_{datetime.now().strftime("%Y%m%d_%H%M%S")}.uvtt','w') as file:
             json.dump(uvtt_file,file,indent=4)
         return

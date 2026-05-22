@@ -11,6 +11,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+dist_history/
 downloads/
 eggs/
 .eggs/
@@ -176,4 +177,5 @@ cython_debug/
 .pypirc
 /dun_gen_console/maps/
 /dun_gen_gui/maps/
+/dun_gen/maps/
 /old/
