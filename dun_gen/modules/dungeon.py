@@ -9,6 +9,7 @@ from datetime import datetime
 import base64
 from io import BytesIO
 import json
+import sys
 class Dungeon:
     _maskmap={0:1,1:2,2:3,4:4,8:5,16:6,32:7,64:8,128:9,3:2,5:10,9:11,17:12,33:13,
               65:14,129:2,6:4,10:15,18:16,34:17,66:18,130:19,12:4,20:20,36:21,68:22,
@@ -35,15 +36,26 @@ class Dungeon:
               159:63,231:61,235:57,237:58,238:22,111:53,175:48,207:61,247:68,251:67,
               253:66,254:65,127:64,191:63,223:62,239:61,255:60}
     
-    _cm={'B':0,'W':1,'F':2,'N':3,'R':4,'C':5,'P':6,'S':7}
-    _debug_palette=[17,17,17,127, 102, 76,240, 240, 240,242, 178, 204,76, 153, 178,153, 178, 242,242, 178, 51, 255, 0, 0]+([0]*(768-24))
-    
+    _cm={'B':0,'W':1,'F':2,'N':3,'R':4,'C':5,'P':6,'S':7,'G':8}
+    _debug_palette=[17,17,17,
+                    127,102,76,
+                    240,240,240,
+                    242, 178, 204,
+                    76, 153, 178,
+                    153, 178, 242,
+                    242, 178, 51,
+                    255, 0, 0,
+                    222, 222, 108
+                    ]
+    _debug_palette+=([0]*(768-len(_debug_palette)))
+
     
     @dataclass
     class Cell:
         x:int
         y:int
         cell_type:str='Cross'
+        cell_subtype:str='None'
         height:int=1
         width:int=1
         ul_corner:tuple[int,int]=(2,2)
@@ -54,6 +66,8 @@ class Dungeon:
         
         def mark_as_room(self):
             self.cell_type='Room'
+        def mark_as_ring(self):
+            self.cell_subtype='Ring'
         def set_corner(self,x:int,y:int):
             self.ul_corner = (x,y)
         def set_size(self,width:int,height:int):
@@ -61,21 +75,41 @@ class Dungeon:
         
             
     
-    def __init__(self,cell_count:tuple[int,int]=(4,3),map_size:tuple[int,int]=(96,39),mode:int=0,density:float=0.6, merge_chance:float=0.05,search_range:int=1,debug=False,wall_char='W',border_char='x',floor_char=' ',**kwargs):
+    def __init__(self,
+        cell_count:tuple[int,int]=(4,3), map_size:tuple[int,int]=(96,39),
+        mode:int=0,
+        density:float=0.6, merge_chance:float=0.05, search_range:int=1,
+        seed=None,debug=False,
+        wall_char='W',border_char='x',floor_char=' ',
+        **kwargs
+        ):
         
-        self.wall_char=wall_char
-        self.border_char=border_char
-        self.floor_char=floor_char
-        self.last_render=None
-        self.internals={}
+        self.cell_count=cell_count
+        self.map_size=map_size
+        self.mode=int(mode)
+        self.density=density
+        self.merge_chance=merge_chance
+        self.search_range=search_range
+        self.kwargs=kwargs
+        self.seed=seed
+        if not self.seed:
+            self.seed=random.randint(-sys.maxsize,sys.maxsize)
+            
+
+        
+        self.recreation_info=self.__getstate__().copy()
+        
+        self.seeded_random=random.Random(self.seed)
+            
+        self.columns, self.rows = cell_count
+        self.columns=int(self.columns)
+        self.rows=int(self.rows)
+        
         self.map_width, self.map_height = map_size
         self.map_width=int(self.map_width)
         self.map_height=int(self.map_height)
         
-        self.map_size=map_size
-        self.columns, self.rows = cell_count
-        self.columns=int(self.columns)
-        self.rows=int(self.rows)
+        
         if self.map_height<10*self.rows:
             print(f'fixing height:{self.map_height} to {10*self.rows}')
             self.map_height=10*self.rows
@@ -83,28 +117,34 @@ class Dungeon:
             print(f'fixing width:{self.map_width} to {12*self.columns}')
             self.map_width=12*self.columns
             
-        self.mode=int(mode)
-        self.density=density
-        self.merge_chance=merge_chance
-        self.search_range=search_range
-        
-        self.kwargs=kwargs
-        
-        self.extra_walk_count=int(self.kwargs.get('extra_walk_count',0))
-        self.extra_walk_length=int(self.kwargs.get('extra_walk_length',100))
+            
         self.debug=debug
+        self.extra_walk_count=int(self.kwargs.get('extra_walk_count',0))
+        self.extra_walk_length=int(self.kwargs.get('extra_walk_length',40))
+        self.extra_walk_mode=int(self.kwargs.get('extra_walk_mode',0))
+        
         
         self.count=self.columns*self.rows
-        self.room_count=int(self.count*density)+ random.randint(0,2)
+        self.room_count=int(self.count*density)+ self.seeded_random.randint(0,2)
+        if r_max:=self.kwargs.get('room_maximum'):
+            self.room_count=min(r_max,self.room_count)
+        if r_min:=self.kwargs.get('room_minimum'):
+            self.room_count=max(r_min,self.room_count)
         self.room_count=min(self.room_count,self.count)
+        
         self.room_width=self.map_width//self.columns
         self.room_height=self.map_height//self.rows
         
         
+        self.wall_char=wall_char
+        self.border_char=border_char
+        self.floor_char=floor_char
+        self.last_render=None
+        self.internals={}
         self.cells={}
         self.rooms={}
-
         self.map_=np.full((self.map_height,self.map_width),self.wall_char,dtype="U64")
+        
         if self.debug:
             print("Debugging on")
             self.sequence=[]
@@ -113,10 +153,7 @@ class Dungeon:
             t=Image.fromarray(self.debug_map)
             t.putpalette(self._debug_palette)
             self.sequence.append(t.copy())
-            
-            
-        
-        
+
         self.setup()
         self.cull_cells()
         self.make_connections()
@@ -132,18 +169,33 @@ class Dungeon:
         
         
     def setup(self):
+        '''
+        Modes:
+        0: Default, full map - Standard Room Randomization
+        1: Edge rooms, full map - Specific Rooms
+        2: Edge rooms, no corners - Specific Rooms
+        6: Cull specific cells - Standard Room Randomization
+        
+        '''
         
         for x,y in product(range(self.columns),range(self.rows)):
             self.cells[(x,y)]=(self.Cell(x,y))
         cell_list=list(self.cells.values())
-        random.shuffle(cell_list)
+        
+        
+        ## Set cells to room
+        
+        self.seeded_random.shuffle(cell_list)
         for i in range(self.room_count):
             cell=cell_list[i]
             cell.mark_as_room()
             x=cell.x
             y=cell.y
-            
             self.rooms[(x,y)]=(cell)
+            if chance:=self.kwargs.get('room_to_ring_chance'):
+                if self.seeded_random.random()<chance:
+                    cell.mark_as_ring()
+            
         
         max_room_width=self.room_width-4
         max_room_height=self.room_height-3
@@ -153,17 +205,19 @@ class Dungeon:
             cell.connectionmap=set([pos])
             
             if cell.cell_type == "Room":
-                local_room_width = (random.randint(5,max_room_width-1) if max_room_width-1>=5 else max_room_width-1)
-                local_room_height= (random.randint(4,max_room_height-1) if max_room_height-1>=4 else max_room_height-1)
+                local_room_width = (self.seeded_random.randint(5,max_room_width-1) if max_room_width-1>=5 else max_room_width-1)
+                local_room_height= (self.seeded_random.randint(4,max_room_height-1) if max_room_height-1>=4 else max_room_height-1)
                 
                 local_room_height=min(local_room_height, int(local_room_width*1.5))
                 local_room_width=min(local_room_width, int(local_room_height*1.5))
-                x_offset = random.randint(0,max_room_width-local_room_width-1)
-                y_offset = random.randint(0,max_room_height-local_room_height-1)
+                x_offset = self.seeded_random.randint(0,max_room_width-local_room_width-1)
+                y_offset = self.seeded_random.randint(0,max_room_height-local_room_height-1)
                 
                 local_x,local_y=cell.ul_corner
                 cell.set_corner(local_x+x_offset,local_y+y_offset)
                 cell.set_size(local_room_width,local_room_height)
+                
+                
             elif cell.cell_type == "Cross":
                 local_x,local_y=cell.ul_corner
                 max_x_offset=(max_room_width-4 if max_room_width-4>=0 else 0)
@@ -172,8 +226,8 @@ class Dungeon:
                 right_margin=(2 if cell.x==self.columns else 2)
                 top_margin=(1 if cell.y==0 else 2)
                 bottom_margin=(1 if cell.y==self.rows else 2)
-                local_x=random.randint(local_x+left_margin,local_x+max_x_offset-right_margin)
-                local_y=random.randint(local_y+top_margin,local_y+max_y_offset-bottom_margin)
+                local_x=self.seeded_random.randint(local_x+left_margin,local_x+max_x_offset-right_margin)
+                local_y=self.seeded_random.randint(local_y+top_margin,local_y+max_y_offset-bottom_margin)
                 cell.set_corner(local_x,local_y)
             
             if self.debug:
@@ -193,8 +247,9 @@ class Dungeon:
     def cull_cells(self):
         '''
         Modes:
-        0: Default, full map
-        
+        0: Default, full map - Standard cell count
+        1: Edge rooms, full map - No Culling
+        2: Edge rooms, no corners - Cull Corners
         6: Cull specific cells - USE WITH CAUTION, CAN CAUSE DISCONNECTED BLOCKS
         '''
         if self.mode==0:
@@ -207,6 +262,13 @@ class Dungeon:
         
     
     def make_connections(self):
+        '''
+        Modes:
+        0: Default, full map - Standard Connections
+        1: Edge rooms, full map - Connect all interiors, random connection betewen corners and edges
+        2: Edge rooms, no corners - Connect all interiors, random connection between edges
+        6: Cull specific cells - Standard Connections
+        '''
         possible_connections=[]
         for cell in self.cells:
             lx,ly=cell
@@ -227,12 +289,12 @@ class Dungeon:
         
         target_cellset = set(self.cells.keys())
         check_cell=list(target_cellset)[0]
-        random.shuffle(possible_connections)
+        self.seeded_random.shuffle(possible_connections)
         bonus_connections=int(self.kwargs.get('bonus_connections',0))
         extra_passes=0
         while possible_connections:
             a,b=possible_connections.pop()
-            merge_roll=random.random()
+            merge_roll=self.seeded_random.random()
             if merge_roll<self.merge_chance:
                 self.cells[a].merges.append(b)
             else:
@@ -241,7 +303,6 @@ class Dungeon:
             new_connectionmap=self.cells[a].connectionmap|self.cells[b].connectionmap
             for cell in new_connectionmap:
                 self.cells[cell].connectionmap = new_connectionmap
-            
             if self.cells[check_cell].connectionmap == target_cellset:
                 if extra_passes>=bonus_connections:
                     return
@@ -258,10 +319,11 @@ class Dungeon:
             oy+=y*self.room_height
             for row in range(oy,oy+dy):
                 for col in range(ox,ox+dx):
-                    self.map_[row,col]=self.floor_char
-            
-                    if self.debug:
-                        self.debug_map[row,col]=self._cm['R' if cell.cell_type=='Room' else 'C']
+                    if cell.cell_subtype!='Ring' or row in [oy,oy+dy-1] or col in [ox,ox+dx-1]:
+                        self.map_[row,col]=self.floor_char
+                
+                        if self.debug:
+                            self.debug_map[row,col]=self._cm['G' if cell.cell_subtype=='Ring' else 'R' if cell.cell_type=='Room' else 'C']
                         
             if self.debug:
                 t=Image.fromarray(self.debug_map)
@@ -286,10 +348,10 @@ class Dungeon:
 
                 
                 if y==by:#horizontal
-                    l_ep = random.randint(oy,oy+dy-1)
-                    r_ep = random.randint(oby,oby+dby-1)
+                    l_ep = self.seeded_random.randint(oy,oy+dy-1)
+                    r_ep = self.seeded_random.randint(oby,oby+dby-1)
                     d=(r_ep-l_ep)//abs(r_ep-l_ep) if r_ep != l_ep else 0
-                    mp=random.randint(ox+dx,obx-1)
+                    mp=self.seeded_random.randint(ox+dx,obx-1)
                     track_x,track_y=ox+dx-1,l_ep
                     
                     if self.debug:
@@ -329,10 +391,10 @@ class Dungeon:
                     
                     
                 elif x==bx:#vertical
-                    t_ep = random.randint(ox,ox+dx-1)
-                    b_ep = random.randint(obx,obx+dbx-1)
+                    t_ep = self.seeded_random.randint(ox,ox+dx-1)
+                    b_ep = self.seeded_random.randint(obx,obx+dbx-1)
                     d=(b_ep-t_ep)//abs(b_ep-t_ep) if b_ep != t_ep else 0
-                    mp=random.randint(oy+dy,oby-1)
+                    mp=self.seeded_random.randint(oy+dy,oby-1)
                     track_y,track_x=oy+dy-1,t_ep
                     
                     if self.debug:
@@ -424,28 +486,42 @@ class Dungeon:
         for col in range(0,self.map_width):
             self.map_[0,col]=self.border_char
             self.map_[self.map_height-1,col]=self.border_char
+            
+        self.cells_by_walls=[]
+        for y,x in np.argwhere(self.map_==self.floor_char):
+            if (self.map_[y-1,x]==self.wall_char or self.map_[y+1,x]==self.wall_char or
+                self.map_[y,x-1]==self.wall_char or self.map_[y,x+1]==self.wall_char):
+                    self.cells_by_walls.append((x,y))
+
         
     def random_path_walk(self):
+
+        
         directions={0:(-1,0),1:(0,1),2:(1,0),3:(0,-1)}
-        x,y=0,0
-        while self.map_[y,x]!=self.floor_char:
-            x=random.randint(1,self.map_width-2)
-            y=random.randint(1,self.map_height-2)
         path_length=0
-        facing=random.randint(0,3)
+        x,y=self.seeded_random.choice(self.cells_by_walls)
+        facing=self.seeded_random.randint(0,3)
         if self.debug:prev_y,prev_x=y,x
         
         while path_length<=self.extra_walk_length:
-            segment_length=random.randint(3,7)
+            segment_length=self.seeded_random.randint(3,7)
+            
             dx,dy=directions[facing]
+            broke=False
             for _ in range(segment_length):
                 x+=dx
                 y+=dy
                 
                 if x>=self.map_width-1 or x<=0:
-                    return
+                    broke=True
+                    break
                 if y>=self.map_height-1 or y<=0:
-                    return
+                    broke=True
+                    break
+                if self.extra_walk_mode==1 and self.map_[y,x]==self.floor_char:
+                    broke=True
+                    break
+                    
                 self.map_[y,x]=self.floor_char
                 if self.debug:
                     self.debug_map[prev_y,prev_x]=self._cm['N']
@@ -456,7 +532,14 @@ class Dungeon:
                     prev_y,prev_x=y,x
                 
                 path_length+=1
-            facing=(facing+random.choice((-1,1)))%4
+            facing=(facing+self.seeded_random.choice((-1,1)))%4
+            
+            if broke:
+                if not self.kwargs.get('multiwalk') and self.extra_walk_mode!=1: break
+                broke=False
+                x,y=self.seeded_random.choice(self.cells_by_walls)
+                facing=self.seeded_random.randint(0,3)
+                if self.debug:prev_y,prev_x=y,x
             
         return
             
@@ -579,7 +662,8 @@ class Dungeon:
                        'ambient_light':'ffffffff'
                        },
                    'lights':[],
-                   'image':img_b64
+                   'image':img_b64,
+                   'dun_gen_recreation_info':self.recreation_info
                    }
         if self.tile_size<20:
             print("CAUTION: FOUNDRY DOES NOT ALLOW TILE SIZES BELOW 20")
